@@ -1,0 +1,7 @@
+{
+  "name": "好樂球 AI 智慧復健團康平台",
+  "description": "這是一個結合 Web Bluetooth 與 PixiJS 的復健遊戲平台，透過 Gemini AI 自動生成適合長者與復健者的趣味互動遊戲。",
+  "requestFramePermissions": [
+    "bluetooth"
+  ]
+}
