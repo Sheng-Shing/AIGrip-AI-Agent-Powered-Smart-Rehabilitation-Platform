@@ -7,7 +7,8 @@ export enum GameMode {
   AVERAGE = 'AVERAGE',
   DUAL = 'DUAL',
   INDEPENDENT = 'INDEPENDENT',
-  STABLE_HOLD = 'STABLE_HOLD'
+  STABLE_HOLD = 'STABLE_HOLD',
+  MVC_CALIBRATION = 'MVC_CALIBRATION'
 }
 
 export enum GameAction {
@@ -42,8 +43,11 @@ export interface GameConfig {
     is_independent?: boolean;
     difficulty_score?: number;
     path?: { x: number; y: number }[]; // For Navigator mode target zone
+    is_calibration?: boolean; // New: Flag for MVC calibration task
     total_duration?: number; // New: Session total duration in seconds
+    min_force?: number;      // New: Minimum required force for Balance/Dual modes
   };
+  clinical_advice?: string; // New: For proactive guidance messages
   rehab_focus: string;
   difficulty_suggestion: string;
   prescription_summary: string;
@@ -56,6 +60,8 @@ export interface SessionMetrics {
   totalSeconds: number;
   avgPressureL?: number;
   avgPressureR?: number;
+  maxPressureL?: number;
+  maxPressureR?: number;
   maxPressure?: number;
   compensationOccurred?: boolean;
 }
@@ -70,6 +76,9 @@ export interface Patient {
   name: string;
   gender: 'male' | 'female' | 'other';
   birthYear: number;
+  daily_mvc_l?: number; // New: Today's Left Hand MVC
+  daily_mvc_r?: number; // New: Today's Right Hand MVC
+  last_mvc_timestamp?: number; // New: When the current MVC was recorded
 }
 
 export interface SavedPrescription {

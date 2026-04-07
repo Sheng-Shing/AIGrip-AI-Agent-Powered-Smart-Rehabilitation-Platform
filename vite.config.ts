@@ -9,7 +9,7 @@ export default defineConfig(({ mode }) => {
   return {
     server: {
       port: 3000,
-      host: '0.0.0.0',
+      host: 'localhost',
       proxy: {}, // Empty proxy to satisfy some internal checks if needed
     },
     plugins: [

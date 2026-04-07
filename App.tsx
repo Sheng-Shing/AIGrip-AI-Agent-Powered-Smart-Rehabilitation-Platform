@@ -1,9 +1,9 @@
 
 import React, { useState, useCallback, useRef, useMemo } from 'react';
-import { ClipboardList, History, Search, User, Calendar, Star, ShieldCheck, Zap, Activity } from 'lucide-react';
+import { ClipboardList, History, Search, User, Calendar, Star, ShieldCheck, Zap, Activity, Download, Upload } from 'lucide-react';
 import { generateGame, generatePatientSuggestion, PatientSuggestion } from './services/geminiService';
 import { generateImage } from './services/imageService';
-import { GameConfig, PressureData, SavedPrescription, SessionMetrics, Patient } from './types';
+import { GameConfig, PressureData, SavedPrescription, SessionMetrics, Patient, GameMode, GameAction } from './types';
 import GameView from './components/GameView';
 import SummaryView from './components/SummaryView';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -49,9 +49,9 @@ const GripTrendLine: React.FC<{ data: { timestamp: number, maxPressure: number }
   const isDeclining = slope < -0.05;
 
   return (
-    <div className="bg-zinc-950/50 p-6 rounded-3xl border border-zinc-800 mb-6">
+    <div className="bg-amber-950/50 p-6 rounded-3xl border border-amber-800 mb-6">
       <div className="flex justify-between items-center mb-4">
-        <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2">
+        <h3 className="text-sm font-bold text-amber-400 uppercase tracking-widest flex items-center gap-2">
           <Activity className="w-4 h-4 text-emerald-400" />
           最大握力趨勢區分析 (Grip Trend)
         </h3>
@@ -84,8 +84,13 @@ const App: React.FC = () => {
   const [isGameActive, setIsGameActive] = useState(false);
   const [prompt, setPrompt] = useState('我想做一個訓練握力，以草莓為主題的趣味復健遊戲');
   const [savedPrompts, setSavedPrompts] = useState<string[]>(() => {
-    const saved = localStorage.getItem('holoball_prompts');
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem('holoball_prompts');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      console.error("Failed to parse saved prompts:", e);
+      return [];
+    }
   });
   const [savedPrescriptions, setSavedPrescriptions] = useState<SavedPrescription[]>(() => {
     try {
@@ -104,8 +109,13 @@ const App: React.FC = () => {
   const [clinicalAdvice, setClinicalAdvice] = useState<string | null>(null);
   const [userHistory, setUserHistory] = useState<SavedPrescription[]>([]);
   const [patients, setPatients] = useState<Patient[]>(() => {
-    const saved = localStorage.getItem('holoball_patients');
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem('holoball_patients');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      console.error("Failed to parse patients:", e);
+      return [];
+    }
   });
   const [selectedPatientId, setSelectedPatientId] = useState<string | undefined>(() => {
     return localStorage.getItem('holoball_selected_patient_id') || undefined;
@@ -114,6 +124,12 @@ const App: React.FC = () => {
   const [aiSuggestion, setAiSuggestion] = useState<PatientSuggestion | null>(null);
   const [loadingSuggestion, setLoadingSuggestion] = useState(false);
   const [generationPatientName, setGenerationPatientName] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'info' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
 
   const selectedPatient = useMemo(() =>
     patients.find(p => p.id === selectedPatientId),
@@ -147,6 +163,17 @@ const App: React.FC = () => {
     }
   }, [patientName, savedPrescriptions]);
 
+  const handlePatientsUpdate = (newPatients: Patient[]) => {
+    setPatients(newPatients);
+    localStorage.setItem('holoball_patients', JSON.stringify(newPatients));
+    // If selected patient was deleted, clear selection
+    if (selectedPatientId && !newPatients.find(p => p.id === selectedPatientId)) {
+      setSelectedPatientId(undefined);
+      localStorage.removeItem('holoball_selected_patient_id');
+      setPatientName('');
+    }
+  };
+
   const fetchHistoryImages = useCallback(async () => {
     try {
       const res = await fetch('/api/list-images');
@@ -168,6 +195,7 @@ const App: React.FC = () => {
   const leftCalibrateRef = useRef<number>(0);
   const rightCalibrateRef = useRef<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const importFileInputRef = useRef<HTMLInputElement>(null);
 
   const handleLocalImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -203,6 +231,56 @@ const App: React.FC = () => {
     reader.readAsDataURL(file);
     // 清除選取，以便下次可以上傳同一張圖
     event.target.value = '';
+  };
+
+  const handleSelectLibraryImage = (img: string, type: 'main' | 'bg') => {
+    let newConfig = config;
+    if (!newConfig) {
+      newConfig = {
+        game_name: '新訓練任務',
+        description: '手動配置的遊戲任務',
+        prescription_summary: '',
+        theme: {
+          color: '0x00E5FF',
+          bg_color: '0x111111',
+          asset_description: 'custom asset',
+          image_prompt: '',
+          bg_image_prompt: '',
+          alpha: 1.0,
+          bg_alpha: 0.2
+        },
+        logic: {
+          mode: GameMode.DUAL,
+          side: 'both',
+          target_range: [0.7, 0.8],
+          hold_time: 1.0,
+          min_engagement: 0.05,
+          action: GameAction.SCALE,
+          is_independent: false,
+          difficulty_score: 5,
+          total_duration: 60
+        },
+        rehab_focus: '自訂對意訓練',
+        difficulty_suggestion: '請配合患者能力調整',
+        bg_image_url: '',
+        image_url: ''
+      };
+    }
+
+    if (type === 'main') {
+      newConfig = { ...newConfig, image_url: img };
+      showToast('✅ 已設定為物件圖片');
+    } else {
+      newConfig = { ...newConfig, bg_image_url: img };
+      showToast('✅ 已設定為場景背景');
+    }
+    setConfig(newConfig);
+    setShowSettlement(false);
+    setShowPatientModal(false);
+    setShowRehabLog(false);
+    setSessionMetrics(null);
+    setClinicalAdvice(null);
+    setAiSuggestion(null);
   };
 
   const handleSavePrompt = () => {
@@ -357,6 +435,10 @@ const App: React.FC = () => {
     setPrompt(rx.raw_prompt);
     setIsGameActive(false);
     setSessionMetrics(null);
+    setShowSettlement(false);
+    setShowRehabLog(false);
+    setAiSuggestion(null);
+    // Don't clear clinicalAdvice here as it might be part of the prescription context
   };
 
   const handleDeletePrescription = (e: React.MouseEvent, id: string) => {
@@ -371,6 +453,57 @@ const App: React.FC = () => {
       }
       return updated;
     });
+  };
+
+  const handleExportData = () => {
+    const backupData = {
+      holoball_patients: localStorage.getItem('holoball_patients'),
+      holoball_prescriptions: localStorage.getItem('holoball_prescriptions'),
+      holoball_prompts: localStorage.getItem('holoball_prompts'),
+      holoball_selected_patient_id: localStorage.getItem('holoball_selected_patient_id'),
+      export_date: new Date().toISOString(),
+      version: '0320'
+    };
+
+    const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `holidayball_backup_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast('✅ 備份資料已匯出');
+  };
+
+  const handleImportData = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!confirm('載入備份將會覆蓋目前的本地資料，且頁面將會重新整理，確定要繼續嗎？')) {
+      event.target.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target?.result as string);
+        if (data.holoball_patients) localStorage.setItem('holoball_patients', data.holoball_patients);
+        if (data.holoball_prescriptions) localStorage.setItem('holoball_prescriptions', data.holoball_prescriptions);
+        if (data.holoball_prompts) localStorage.setItem('holoball_prompts', data.holoball_prompts);
+        if (data.holoball_selected_patient_id) localStorage.setItem('holoball_selected_patient_id', data.holoball_selected_patient_id);
+
+        showToast('✅ 資料載入成功，正在嘗試重新整理...');
+        setTimeout(() => window.location.reload(), 1500);
+      } catch (err) {
+        console.error('Import failed:', err);
+        alert('載入失敗：檔案格式不正確');
+      }
+    };
+    reader.readAsText(file);
+    event.target.value = '';
   };
 
   const handleBLEValue = useCallback((event: Event) => {
@@ -433,66 +566,156 @@ const App: React.FC = () => {
     setIsGameActive(false);
     setSessionMetrics(metrics);
     setShowSettlement(true);
-  }, []);
+
+    // Data Backflow: Update MVC if it was a calibration task
+    if (config?.logic.is_calibration && selectedPatient) {
+      const newMaxL = metrics.maxPressureL || 0;
+      const newMaxR = metrics.maxPressureR || 0;
+      if (newMaxL > 0 || newMaxR > 0) {
+        // Safeguard: Ensure MVC is at least 0.02 to avoid extreme sensitivity or division issues
+        const safeL = newMaxL > 0 ? Math.max(0.02, newMaxL) : 0;
+        const safeR = newMaxR > 0 ? Math.max(0.02, newMaxR) : 0;
+
+        const updatedPatients = patients.map(p => {
+          if (p.id === selectedPatientId) {
+            return {
+              ...p,
+              daily_mvc_l: safeL || p.daily_mvc_l,
+              daily_mvc_r: safeR || p.daily_mvc_r,
+              last_mvc_timestamp: Date.now()
+            };
+          }
+          return p;
+        });
+        handlePatientsUpdate(updatedPatients);
+        alert(`✅ 校準完成！今日肌力基準已更新：左手 ${Math.round(safeL * 100)}% / 右手 ${Math.round(safeR * 100)}%`);
+      }
+    }
+  }, [config, selectedPatient, selectedPatientId, patients]);
 
   const handlePatientSelect = async (patient: Patient, autoAiAnalysis: boolean) => {
-    // 若當前已有生成的處方且姓名不同，執行連動更新
-    if (generationPatientName && generationPatientName !== patient.name) {
-      const oldName = generationPatientName;
-      const newName = patient.name;
-
-      const syncText = (text: string | null) => {
-        if (!text || !newName) return text;
-        // 先嘗試用上次記錄的姓名替換
-        let updated = oldName ? text.split(oldName).join(newName) : text;
-
-        // 強化：智慧識別「[人名]您好」或「[人名]先生/女士/伯伯/阿姨」等幻覺模式並校準
-        const patterns = [
-          /^「?([^，\s]{1,4})(您好|先生|女士|伯伯|阿姨|婆婆|奶奶|爺爺)/, // 匹配開頭
-          /([^，\s]{1,4})(您好|先生|女士|伯伯|阿姨|婆婆|奶奶|爺爺)/      // 匹配文中
-        ];
-
-        patterns.forEach(pattern => {
-          updated = updated.replace(pattern, (match, p1, p2) => {
-            // 如果被匹配的人名不是目前的患者，就換成目前的
-            if (p1 !== newName) return (match.startsWith('「') ? '「' : '') + newName + p2;
-            return match;
-          });
-        });
-
-        return updated;
-      };
-
-      if (clinicalAdvice) setClinicalAdvice(syncText(clinicalAdvice));
-      if (config) {
-        setConfig(prev => prev ? {
-          ...prev,
-          game_name: syncText(prev.game_name) || prev.game_name,
-          prescription_summary: syncText(prev.prescription_summary) || prev.prescription_summary,
-          rehab_focus: syncText(prev.rehab_focus) || prev.rehab_focus,
-          difficulty_suggestion: syncText(prev.difficulty_suggestion) || prev.difficulty_suggestion
-        } : null);
-      }
-      if (prompt) setPrompt(syncText(prompt) || prompt);
-      setGenerationPatientName(newName);
-    }
-
-    setSelectedPatientId(patient.id);
-    localStorage.setItem('holoball_selected_patient_id', patient.id);
-    setShowPatientModal(false);
-
-    if (!autoAiAnalysis) return;
-
-    // 觸發 AI 建議
-    setLoadingSuggestion(true);
     try {
+      // 若當前已有生成的處方且姓名不同，執行連動更新
+      if (generationPatientName && generationPatientName !== patient.name) {
+        const oldName = generationPatientName;
+        const newName = patient.name;
+
+        const syncText = (text: string | null) => {
+          if (!text || !newName) return text;
+          // 先嘗試用上次記錄的姓名替換
+          let updated = oldName ? text.split(oldName).join(newName) : text;
+
+          // 強化：智慧識別「[人名]您好」或「[人名]先生/女士/伯伯/阿姨」等幻覺模式並校準
+          const patterns = [
+            /^「?([^，\s]{1,4})(您好|先生|女士|伯伯|阿姨|婆婆|奶奶|爺爺)/, // 匹配開頭
+            /([^，\s]{1,4})(您好|先生|女士|伯伯|阿姨|婆婆|奶奶|爺爺)/      // 匹配文中
+          ];
+
+          patterns.forEach(pattern => {
+            updated = updated.replace(pattern, (match, p1, p2) => {
+              // 如果被匹配的人名不是目前的患者，就換成目前的
+              if (p1 !== newName) return (match.startsWith('「') ? '「' : '') + newName + p2;
+              return match;
+            });
+          });
+
+          return updated;
+        };
+
+        if (clinicalAdvice) setClinicalAdvice(syncText(clinicalAdvice));
+        if (config) {
+          setConfig(prev => prev ? {
+            ...prev,
+            game_name: syncText(prev.game_name) || prev.game_name,
+            prescription_summary: syncText(prev.prescription_summary) || prev.prescription_summary,
+            rehab_focus: syncText(prev.rehab_focus) || prev.rehab_focus,
+            difficulty_suggestion: syncText(prev.difficulty_suggestion) || prev.difficulty_suggestion
+          } : null);
+        }
+        if (prompt) setPrompt(syncText(prompt) || prompt);
+        setGenerationPatientName(newName);
+      }
+
+      const isSamePatient = selectedPatientId === patient.id;
+      setSelectedPatientId(patient.id);
+      localStorage.setItem('holoball_selected_patient_id', patient.id);
+      setShowPatientModal(false);
+
+      if (!isSamePatient) {
+        // 清空現有遊戲狀態，確保全新開始
+        setConfig(null);
+        setIsGameActive(false);
+        setShowSettlement(false);
+        setSessionMetrics(null);
+        setAiSuggestion(null);
+        setClinicalAdvice(null);
+      }
+
+      const today = new Date().toDateString();
+      const hasTodayMvc = patient.last_mvc_timestamp && new Date(patient.last_mvc_timestamp).toDateString() === today;
+      const hasBothHands = (patient as any).daily_mvc_l !== undefined && (patient as any).daily_mvc_r !== undefined;
+
+      if (!hasTodayMvc || !hasBothHands) {
+        const history = savedPrescriptions.filter(rx => rx.patientId === patient.id || rx.patientName === patient.name);
+        const recentPressures = history.slice(0, 5).map(rx => Math.max(rx.metrics?.maxPressureL || 0, rx.metrics?.maxPressureR || 0, rx.metrics?.maxPressure || 0));
+        const isDegrading = recentPressures.length >= 3 && recentPressures[0] < recentPressures[recentPressures.length - 1] * 0.8;
+
+        let promptMsg = `${patient.name} 您好！偵測到您今日尚未更新肌力基準。我們現在開始 10 秒快速兩手同時智慧校準。`;
+        if (isDegrading) {
+          promptMsg = `注意到您最近握力稍有變動，今天我們重新精準標定一次基準值（兩手同時），好嗎？`;
+        }
+
+        setClinicalAdvice(promptMsg);
+        setPrompt(`主題：雙手熱氣球。這是一個 MVC 校準任務，請同時全力握緊好樂球兩側。`);
+
+        const calibrationConfig: GameConfig = {
+          game_name: "基準校準：雙手熱氣球",
+          description: "請在 10 秒內同時盡全力握緊好樂球左右兩側，我們將為您同步標定今日的肌力基準。",
+          prescription_summary: "HolidayBall 校準任務：準備好標定今日基準了嗎？",
+          theme: {
+            color: "0xFFD700",
+            bg_color: "0x111111",
+            asset_description: "colorful hot air balloon",
+            image_prompt: "colorful hot air balloon, vibrant colors, solid 3D render, high contrast, thick black bold outline",
+            bg_image_prompt: "sunny sky with light clouds, washed out, pastel palette, blurred background, low detail, holiday atmosphere",
+            alpha: 1.0,
+            bg_alpha: 0.2
+          },
+          logic: {
+            mode: GameMode.MVC_CALIBRATION,
+            side: 'both',
+            target_range: [0.1, 1.0],
+            hold_time: 10,
+            min_engagement: 0.05,
+            action: GameAction.SCALE,
+            is_independent: false,
+            difficulty_score: 5,
+            total_duration: 10,
+            is_calibration: true
+          },
+          rehab_focus: "肌力基準標定",
+          difficulty_suggestion: "全力輸出即可",
+          clinical_advice: promptMsg
+        };
+        setConfig(calibrationConfig);
+        return;
+      }
+
+      if (!autoAiAnalysis) return;
+
+      // 觸發 AI 建議
+      setLoadingSuggestion(true);
       const history = savedPrescriptions.filter(rx => rx.patientId === patient.id || rx.patientName === patient.name);
-      const suggestion = await generatePatientSuggestion(patient.name, history);
-      setAiSuggestion(suggestion);
+      try {
+        const suggestion = await generatePatientSuggestion(patient.name, history);
+        setAiSuggestion(suggestion);
+      } catch (err) {
+        console.error("Failed to generate AI suggestion:", err);
+      } finally {
+        setLoadingSuggestion(false);
+      }
     } catch (err) {
-      console.error("Failed to generate AI suggestion:", err);
-    } finally {
-      setLoadingSuggestion(false);
+      console.error('Error in handlePatientSelect:', err);
     }
   };
 
@@ -513,16 +736,7 @@ const App: React.FC = () => {
     setGenerationPatientName(selectedPatient?.name || null);
   };
 
-  const handlePatientsUpdate = (newPatients: Patient[]) => {
-    setPatients(newPatients);
-    localStorage.setItem('holoball_patients', JSON.stringify(newPatients));
-    // If selected patient was deleted, clear selection
-    if (selectedPatientId && !newPatients.find(p => p.id === selectedPatientId)) {
-      setSelectedPatientId(undefined);
-      localStorage.removeItem('holoball_selected_patient_id');
-      setPatientName('');
-    }
-  };
+
 
 
 
@@ -571,6 +785,8 @@ const App: React.FC = () => {
     setIsGameActive(false);
     setSessionMetrics(null);
     setClinicalAdvice(null);
+    setShowSettlement(false);
+    setAiSuggestion(null);
 
     const advicePatientName = selectedPatient?.name || '患者';
     const enhancedPrompt = `受訓者姓名為「${advicePatientName}」。請依據此姓名產出個人化建議。需求：${prompt}`;
@@ -656,17 +872,17 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-zinc-950 p-4 md:p-8 space-y-4">
+    <div className="flex flex-col h-screen w-screen bg-amber-950 p-4 md:p-8 space-y-4">
       <style>{`
         .checkered-bg {
           background-image: 
-            linear-gradient(45deg, #111 25%, transparent 25%), 
-            linear-gradient(-45deg, #111 25%, transparent 25%),
-            linear-gradient(45deg, transparent 75%, #111 75%),
-            linear-gradient(-45deg, transparent 75%, #111 75%);
+            linear-gradient(45deg, #92400e 25%, transparent 25%), 
+            linear-gradient(-45deg, #92400e 25%, transparent 25%),
+            linear-gradient(45deg, transparent 75%, #92400e 75%),
+            linear-gradient(-45deg, transparent 75%, #92400e 75%);
           background-size: 20px 20px;
           background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
-          background-color: #000;
+          background-color: #451a03;
         }
         @keyframes loading-dots {
           0% { content: ''; }
@@ -686,37 +902,40 @@ const App: React.FC = () => {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h1 className="text-3xl font-bold bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
-            AIGrip 智癒球：基於生成式 AI 之全方位抗代償智慧復健平台
+            AIGrip 智癒球：基於 AI Agent 技術之全方位智慧復健平台
           </h1>
-          <p className="text-zinc-400 text-sm mt-1">整合 GenAI 情境誘導技術與雙軌感測之精準康復管理方案</p>
+          <p className="text-amber-400 text-sm mt-1">整合 GenAI 數位照護師與雙軌感測之精準康復管理方案 v0407</p>
         </div>
 
         <div className="flex gap-2">
           <button
             onClick={() => setShowPatientModal(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg font-bold bg-zinc-800 hover:bg-zinc-700 text-white transition-all border border-zinc-700"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg font-bold bg-amber-800 hover:bg-amber-700 text-white transition-all border border-amber-700"
           >
-            <User className={`w-4 h-4 ${selectedPatient ? 'text-emerald-400' : 'text-zinc-500'}`} />
+            <User className={`w-4 h-4 ${selectedPatient ? 'text-emerald-400' : 'text-amber-500'}`} />
             {selectedPatient ? selectedPatient.name : '選擇患者'}
           </button>
           <button
             onClick={() => setShowRehabLog(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg font-bold bg-zinc-800 hover:bg-zinc-700 text-white transition-all border border-zinc-700"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg font-bold bg-amber-800 hover:bg-amber-700 text-white transition-all border border-amber-700"
           >
             <History className="w-4 h-4 text-cyan-400" />
             康復日誌
           </button>
           <button
-            onClick={connectBLE}
-            disabled={bleStatus !== 'disconnected'}
+            onClick={() => {
+              if (bleStatus === 'disconnected') connectBLE();
+              else if (bleStatus === 'connected' && !isGameActive) disconnectBLE();
+            }}
+            disabled={bleStatus === 'connecting' || (bleStatus === 'connected' && isGameActive)}
             className={`px-4 py-2 rounded-lg font-bold transition-all ${bleStatus === 'connected'
-              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50 cursor-default'
+              ? (isGameActive ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50 opacity-50 cursor-not-allowed' : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50 hover:bg-rose-500/90 hover:text-white hover:border-rose-500 cursor-pointer')
               : bleStatus === 'connecting'
-                ? 'bg-zinc-800 text-zinc-500 animate-pulse cursor-wait'
+                ? 'bg-amber-800 text-amber-500 animate-pulse cursor-wait'
                 : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/20'
               }`}
           >
-            {bleStatus === 'connected' ? '● 已連線' : bleStatus === 'connecting' ? '連接中...請勿握壓好樂球' : '連接好樂球'}
+            {bleStatus === 'connected' ? (isGameActive ? '● 已連線' : '● 已連線 (點擊斷開)') : bleStatus === 'connecting' ? '連接中...請勿握壓好樂球' : '連接好樂球'}
           </button>
         </div>
       </div>
@@ -724,15 +943,15 @@ const App: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 flex-1 min-h-0">
         {/* Left Control Panel */}
         <div className="lg:col-span-1 flex flex-col space-y-4 overflow-y-auto pr-2 custom-scrollbar">
-          <div className="bg-zinc-900 p-4 rounded-xl border border-zinc-800">
-            <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-3">好樂球狀態</h2>
+          <div className="bg-amber-900 p-4 rounded-xl border border-amber-800">
+            <h2 className="text-sm font-semibold text-amber-400 uppercase tracking-wider mb-3">好樂球狀態</h2>
             <div className="space-y-3">
               <div>
                 <div className="flex justify-between text-xs mb-1">
                   <span className="text-rose-400 font-medium">左球壓力</span>
                   <span>{Math.round(pressure.left * 100)}%</span>
                 </div>
-                <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+                <div className="h-2 bg-amber-800 rounded-full overflow-hidden">
                   <div className="h-full bg-rose-500 transition-all duration-75" style={{ width: `${pressure.left * 100}%` }} />
                 </div>
               </div>
@@ -741,31 +960,31 @@ const App: React.FC = () => {
                   <span className="text-amber-400 font-medium">右球壓力</span>
                   <span>{Math.round(pressure.right * 100)}%</span>
                 </div>
-                <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+                <div className="h-2 bg-amber-800 rounded-full overflow-hidden">
                   <div className="h-full bg-amber-500 transition-all duration-75" style={{ width: `${pressure.right * 100}%` }} />
                 </div>
               </div>
             </div>
           </div>
 
-          <div className="bg-zinc-900 p-4 rounded-xl border border-zinc-800 flex flex-col min-h-[450px]">
-            <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-3">AI 智能處方建議</h2>
+          <div className="bg-amber-900 p-4 rounded-xl border border-amber-800 flex flex-col min-h-[450px]">
+            <h2 className="text-sm font-semibold text-amber-400 uppercase tracking-wider mb-3">AI 智能處方建議</h2>
 
             <div className="mb-4">
-              <label className="text-[10px] font-bold text-zinc-500 uppercase mb-1 block">受試者姓名</label>
+              <label className="text-[10px] font-bold text-amber-500 uppercase mb-1 block">受試者姓名</label>
               <div className="relative">
                 <input
                   type="text"
                   value={patientName}
                   onChange={(e) => setPatientName(e.target.value)}
                   placeholder="輸入姓名以載入紀錄..."
-                  className="w-full bg-zinc-950 border border-zinc-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  className="w-full bg-amber-950 border border-amber-700 rounded-lg p-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
                   list="app-patients-list"
                 />
                 <datalist id="app-patients-list">
                   {existingPatients.map(name => <option key={name} value={name} />)}
                 </datalist>
-                <User className="absolute right-2 top-2 w-4 h-4 text-zinc-600" />
+                <User className="absolute right-2 top-2 w-4 h-4 text-amber-600" />
               </div>
             </div>
 
@@ -773,29 +992,29 @@ const App: React.FC = () => {
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="輸入復健目標或主題..."
-              className="w-full h-32 bg-zinc-950 border border-zinc-700 rounded-lg p-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none resize-none mb-3"
+              className="w-full h-32 bg-amber-950 border border-amber-700 rounded-lg p-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none resize-none mb-3"
             />
             <div className="flex gap-2 mb-4">
               <button
                 onClick={handleGenerateGame}
                 disabled={loading}
-                className={`flex-1 py-3 rounded-lg font-bold transition-all ${loading ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg'
+                className={`flex-1 py-3 rounded-lg font-bold transition-all ${loading ? 'bg-amber-800 text-amber-500 cursor-not-allowed' : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg'
                   }`}
               >
                 {loading ? <span className="loading-dots">生成中</span> : '生成遊戲'}
               </button>
               {loadingSuggestion && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-[1000] animate-in fade-in duration-300">
-                  <div className="bg-zinc-900/90 border-2 border-emerald-500/50 p-12 rounded-[2.5rem] shadow-2xl flex flex-col items-center gap-6 animate-in zoom-in duration-500">
+                <div className="fixed inset-0 bg-amber-950/60 backdrop-blur-md flex items-center justify-center z-[1000] animate-in fade-in duration-300">
+                  <div className="bg-amber-900/90 border-2 border-emerald-500/50 p-12 rounded-[2.5rem] shadow-2xl flex flex-col items-center gap-6 animate-in zoom-in duration-500">
                     <div className="w-20 h-20 border-4 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin" />
                     <span className="text-[40px] font-black text-emerald-400 tracking-tighter drop-shadow-[0_0_15px_rgba(52,211,153,0.3)]">AI 分析中...</span>
-                    <span className="text-zinc-500 text-sm font-bold uppercase tracking-[0.2em]">正在為您打造個人化度假任務</span>
+                    <span className="text-amber-500 text-sm font-bold uppercase tracking-[0.2em]">正在為您打造個人化度假任務</span>
                   </div>
                 </div>
               )}
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="px-4 py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg font-bold transition-all border border-zinc-700"
+                className="px-4 py-3 bg-amber-800 hover:bg-amber-700 text-amber-300 rounded-lg font-bold transition-all border border-amber-700"
                 title="上傳本地圖片"
               >
                 上傳
@@ -809,7 +1028,7 @@ const App: React.FC = () => {
               />
               <button
                 onClick={handleSavePrompt}
-                className="px-4 py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg font-bold transition-all border border-zinc-700"
+                className="px-4 py-3 bg-amber-800 hover:bg-amber-700 text-amber-300 rounded-lg font-bold transition-all border border-amber-700"
                 title="儲存提示詞"
               >
                 儲存
@@ -818,21 +1037,21 @@ const App: React.FC = () => {
 
             {/* Saved Prompts List */}
             <div className="flex-1 min-h-0 flex flex-col">
-              <h3 className="text-xs font-bold text-zinc-500 uppercase mb-2">已儲存的提示詞</h3>
+              <h3 className="text-xs font-bold text-amber-500 uppercase mb-2">已儲存的提示詞</h3>
               <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 pr-1">
                 {savedPrompts.length === 0 ? (
-                  <p className="text-zinc-600 text-xs italic">尚未儲存任何提示詞</p>
+                  <p className="text-amber-600 text-xs italic">尚未儲存任何提示詞</p>
                 ) : (
                   savedPrompts.map((p, i) => (
                     <div
                       key={i}
                       onClick={() => setPrompt(p)}
-                      className="group relative bg-zinc-950 border border-zinc-800 hover:border-zinc-600 p-2 rounded-lg cursor-pointer transition-all"
+                      className="group relative bg-amber-950 border border-amber-800 hover:border-amber-600 p-2 rounded-lg cursor-pointer transition-all"
                     >
-                      <p className="text-zinc-300 text-xs line-clamp-2 pr-6">{p}</p>
+                      <p className="text-amber-300 text-xs line-clamp-2 pr-6">{p}</p>
                       <button
                         onClick={(e) => handleDeletePrompt(e, p)}
-                        className="absolute right-2 top-2 text-zinc-600 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                        className="absolute right-2 top-2 text-amber-600 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
                         title="刪除"
                       >
                         ✕
@@ -844,21 +1063,21 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="bg-zinc-900 p-4 rounded-xl border border-zinc-800 flex flex-col min-h-[300px]">
-            <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-3">歷史處方</h2>
+          <div className="bg-amber-900 p-4 rounded-xl border border-amber-800 flex flex-col min-h-[300px]">
+            <h2 className="text-sm font-semibold text-amber-400 uppercase tracking-wider mb-3">歷史處方</h2>
             <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 pr-1">
               {savedPrescriptions.filter(rx => !rx.metrics).length === 0 ? (
-                <p className="text-zinc-600 text-xs italic">尚未儲存任何處方</p>
+                <p className="text-amber-600 text-xs italic">尚未儲存任何處方</p>
               ) : (
                 savedPrescriptions.filter(rx => !rx.metrics).map((rx) => (
                   <div
                     key={rx.id}
                     onClick={() => handleLoadPrescription(rx)}
-                    className={`group relative bg-zinc-950 border p-3 rounded-lg cursor-pointer transition-all hover:border-emerald-500/50 ${config && config.game_name === rx.game_name ? 'border-emerald-500 bg-emerald-500/5' : 'border-zinc-800'
+                    className={`group relative bg-amber-950 border p-3 rounded-lg cursor-pointer transition-all hover:border-emerald-500/50 ${config && config.game_name === rx.game_name ? 'border-emerald-500 bg-emerald-500/5' : 'border-amber-800'
                       }`}
                   >
                     <div className="flex gap-3 items-center">
-                      <div className="w-12 h-12 bg-zinc-900 rounded border border-zinc-800 flex items-center justify-center overflow-hidden shrink-0 checkered-bg">
+                      <div className="w-12 h-12 bg-amber-900 rounded border border-amber-800 flex items-center justify-center overflow-hidden shrink-0 checkered-bg">
                         {rx.assets.image_url ? (
                           <img src={rx.assets.image_url} alt="" className="w-full h-full object-contain p-0.5" />
                         ) : (
@@ -867,19 +1086,19 @@ const App: React.FC = () => {
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <p className="text-zinc-200 text-sm font-bold truncate">{rx.game_name}</p>
+                          <p className="text-amber-200 text-sm font-bold truncate">{rx.game_name}</p>
                           {rx.patientName && (
                             <span className="bg-emerald-500/10 text-emerald-500 text-[8px] px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold shrink-0">
                               {rx.patientName}
                             </span>
                           )}
                         </div>
-                        <p className="text-zinc-500 text-[10px]">{new Date(rx.timestamp).toLocaleString()}</p>
+                        <p className="text-amber-500 text-[10px]">{new Date(rx.timestamp).toLocaleString()}</p>
                       </div>
                     </div>
                     <button
                       onClick={(e) => handleDeletePrescription(e, rx.id)}
-                      className="absolute right-2 top-2 text-zinc-600 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="absolute right-2 top-2 text-amber-600 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
                     >
                       ✕
                     </button>
@@ -889,12 +1108,12 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className="bg-zinc-900 p-4 rounded-xl border border-zinc-800 flex flex-col min-h-[300px]">
+          <div className="bg-amber-900 p-4 rounded-xl border border-amber-800 flex flex-col min-h-[300px]">
             <div className="flex justify-between items-center mb-3">
-              <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">素材圖庫</h2>
+              <h2 className="text-sm font-semibold text-amber-400 uppercase tracking-wider">素材圖庫</h2>
               <button
                 onClick={fetchHistoryImages}
-                className="text-[10px] text-zinc-500 hover:text-cyan-400"
+                className="text-[10px] text-amber-500 hover:text-cyan-400"
               >
                 🔄 重新整理
               </button>
@@ -903,22 +1122,37 @@ const App: React.FC = () => {
               <div className="h-full overflow-y-auto custom-scrollbar pr-1">
                 <div className="grid grid-cols-2 gap-2 auto-rows-max">
                   {historyImages.length === 0 ? (
-                    <p className="col-span-2 text-zinc-600 text-xs italic text-center py-8">尚未有歷史素材</p>
+                    <p className="col-span-2 text-amber-600 text-xs italic text-center py-8">尚未有歷史素材</p>
                   ) : (
                     historyImages.map((img, i) => (
                       <div
                         key={i}
-                        onClick={() => {
-                          if (config) setConfig({ ...config, image_url: img });
-                          else alert('請先生成遊戲，再挑選圖片。');
-                        }}
-                        className={`w-full aspect-video checkered-bg border rounded-lg cursor-pointer transition-all overflow-hidden group relative hover:border-cyan-500/50 ${config?.image_url === img ? 'border-emerald-500 ring-2 ring-emerald-500/20' : 'border-zinc-800'
+                        className={`w-full aspect-video checkered-bg border rounded-lg transition-all overflow-hidden group relative ${config?.image_url === img || config?.bg_image_url === img
+                            ? 'border-emerald-500 ring-2 ring-emerald-500/10'
+                            : 'border-amber-800'
                           }`}
                       >
                         <img src={img} alt={`History ${i}`} className="w-full h-full object-contain p-1" />
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                          <span className="text-[10px] text-white font-bold bg-cyan-600 px-2 py-1 rounded shadow-lg">選用</span>
+                        <div className="absolute inset-0 bg-amber-950/60 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center gap-2 transition-opacity p-2">
+                          <button
+                            onClick={() => handleSelectLibraryImage(img, 'main')}
+                            className="w-full py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white font-bold rounded text-[10px] shadow-lg flex items-center justify-center gap-1 transition-transform active:scale-95"
+                          >
+                            <span>使用物件</span>
+                          </button>
+                          <button
+                            onClick={() => handleSelectLibraryImage(img, 'bg')}
+                            className="w-full py-1.5 bg-amber-700 hover:bg-amber-600 text-white font-bold rounded text-[10px] shadow-lg flex items-center justify-center gap-1 transition-transform active:scale-95"
+                          >
+                            <span>使用背景</span>
+                          </button>
                         </div>
+                        {config?.image_url === img && (
+                          <div className="absolute top-1 left-1 bg-emerald-500 text-[8px] font-black px-1 rounded text-amber-950 uppercase">Main</div>
+                        )}
+                        {config?.bg_image_url === img && (
+                          <div className="absolute top-1 right-1 bg-cyan-500 text-[8px] font-black px-1 rounded text-amber-950 uppercase">BG</div>
+                        )}
                       </div>
                     ))
                   )}
@@ -926,26 +1160,53 @@ const App: React.FC = () => {
               </div>
             </div>
           </div>
+          <div className="bg-amber-900 p-4 rounded-xl border border-amber-800 flex flex-col">
+            <h2 className="text-sm font-semibold text-amber-400 uppercase tracking-wider mb-3">資料維護</h2>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={handleExportData}
+                className="flex items-center justify-center gap-2 py-2 bg-amber-800 hover:bg-amber-700 text-amber-300 rounded-lg text-[10px] font-bold border border-amber-700 transition-all"
+              >
+                <Download className="w-3 h-3" />
+                匯出備份
+              </button>
+              <button
+                onClick={() => importFileInputRef.current?.click()}
+                className="flex items-center justify-center gap-2 py-2 bg-amber-800 hover:bg-amber-700 text-amber-300 rounded-lg text-[10px] font-bold border border-amber-700 transition-all"
+              >
+                <Upload className="w-3 h-3" />
+                載入備份
+              </button>
+              <input
+                type="file"
+                ref={importFileInputRef}
+                onChange={handleImportData}
+                accept="application/json"
+                className="hidden"
+              />
+            </div>
+            <p className="text-[9px] text-amber-600 mt-2 text-center">匯出結果為 JSON 格式，可跨機器轉移資料</p>
+          </div>
         </div>
 
         {/* Right Game Canvas */}
         <div className="lg:col-span-3 flex flex-col space-y-4 overflow-y-auto pr-2 custom-scrollbar">
           {config ? (
             <>
-              <div className="bg-zinc-900/50 p-4 rounded-xl border border-zinc-800 backdrop-blur-sm flex justify-between items-center">
+              <div className="bg-amber-900/50 p-4 rounded-xl border border-amber-800 backdrop-blur-sm flex justify-between items-center">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-emerald-500/10 rounded-lg">
                     <span className="text-2xl">🎮</span>
                   </div>
                   <div>
                     <h2 className="text-xl font-bold text-white">{config.game_name}</h2>
-                    <p className="text-zinc-400 text-sm">{config.description}</p>
+                    <p className="text-amber-400 text-sm">{config.description}</p>
                   </div>
                 </div>
                 {isGameActive && (
                   <button
                     onClick={stopGame}
-                    className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm font-bold transition-colors border border-zinc-700"
+                    className="px-4 py-2 bg-amber-800 hover:bg-amber-700 text-amber-300 rounded-lg text-sm font-bold transition-colors border border-amber-700"
                   >
                     結束遊戲
                   </button>
@@ -954,7 +1215,15 @@ const App: React.FC = () => {
 
               <div className="flex-1 relative rounded-xl overflow-hidden group">
                 <ErrorBoundary fallback={<div className="text-white p-4">Game Error</div>}>
-                  <GameView config={config} pressure={pressure} isActive={isGameActive} onSessionEnd={handleSessionEnd} />
+                  <GameView
+                    config={config}
+                    pressure={pressure}
+                    isActive={isGameActive}
+                    patientName={selectedPatient?.name}
+                    mvcL={selectedPatient?.daily_mvc_l}
+                    mvcR={selectedPatient?.daily_mvc_r}
+                    onSessionEnd={handleSessionEnd}
+                  />
                 </ErrorBoundary>
 
                 {showSettlement && sessionMetrics && (
@@ -981,8 +1250,8 @@ const App: React.FC = () => {
                 )}
 
                 {!isGameActive && (
-                  <div className="absolute inset-0 bg-black/80 backdrop-blur-md flex flex-col items-center justify-center z-50 transition-all p-6">
-                    <div className="w-full max-w-lg bg-zinc-900 border-2 border-emerald-500/50 rounded-2xl shadow-2xl shadow-emerald-950/20 flex flex-col max-h-[90vh] overflow-hidden transform transition-all hover:scale-[1.01]">
+                  <div className="absolute inset-0 bg-amber-950/80 backdrop-blur-md flex flex-col items-center justify-center z-50 transition-all p-6">
+                    <div className="w-full max-w-lg bg-amber-900 border-2 border-emerald-500/50 rounded-2xl shadow-2xl shadow-emerald-950/20 flex flex-col max-h-[90vh] overflow-hidden transform transition-all hover:scale-[1.01]">
                       {/* Header */}
                       <div className="bg-emerald-900/30 px-6 py-4 border-b border-emerald-500/20 shrink-0 flex justify-between items-center">
                         <h3 className="text-2xl font-black text-white tracking-tight flex items-center gap-3">
@@ -1003,7 +1272,7 @@ const App: React.FC = () => {
                           <p className="text-xl font-bold text-white">{config.game_name}</p>
                         </div>
 
-                        <div className="bg-zinc-950/50 rounded-xl p-5 border border-zinc-800">
+                        <div className="bg-amber-950/50 rounded-xl p-5 border border-amber-800">
                           <label className="text-emerald-500/70 text-[10px] font-bold uppercase tracking-widest mb-2 block">訓練指令</label>
                           <p className="text-lg text-emerald-50 leading-relaxed font-medium">
                             {config.prescription_summary || `HolidayBall 任務：${config.logic.is_independent ? '獨立' : '對意'}訓練 (${config.logic.mode})，${config.game_name}，區間 ${Math.round(config.logic.target_range[0] * 100)}%~${Math.round(config.logic.target_range[1] * 100)}%，持續 ${config.logic.hold_time} 秒。`}
@@ -1018,7 +1287,7 @@ const App: React.FC = () => {
                             <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest mb-2 block flex items-center gap-2">
                               <Star className="w-3 h-3" /> AI 臨床助理建議
                             </label>
-                            <p className="text-zinc-200 text-sm leading-relaxed italic">
+                            <p className="text-amber-200 text-sm leading-relaxed italic">
                               「{clinicalAdvice}」
                             </p>
                           </div>
@@ -1040,7 +1309,7 @@ const App: React.FC = () => {
                           </button>
                           <button
                             onClick={() => setConfig(null)}
-                            className="px-6 py-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 font-bold rounded-xl text-lg transition-all active:scale-[0.98]"
+                            className="px-6 py-4 bg-amber-800 hover:bg-amber-700 text-amber-400 font-bold rounded-xl text-lg transition-all active:scale-[0.98]"
                           >
                             取消
                           </button>
@@ -1048,8 +1317,8 @@ const App: React.FC = () => {
                       </div>
 
                       {/* Footer Badge */}
-                      <div className="bg-zinc-950 px-6 py-3 text-center border-t border-zinc-900 shrink-0">
-                        <p className="text-[10px] text-zinc-600 font-bold uppercase tracking-[0.2em]">HolidayBall AI Clinical Protocol Approved</p>
+                      <div className="bg-amber-950 px-6 py-3 text-center border-t border-amber-900 shrink-0">
+                        <p className="text-[10px] text-amber-600 font-bold uppercase tracking-[0.2em]">HolidayBall AI Clinical Protocol Approved</p>
                       </div>
                     </div>
 
@@ -1065,35 +1334,35 @@ const App: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="bg-zinc-900/50 p-4 rounded-xl border border-zinc-800 max-h-32 overflow-y-auto custom-scrollbar">
-                  <h3 className="text-emerald-400 text-xs font-bold uppercase mb-1 sticky top-0 bg-zinc-900/50">復健重點</h3>
-                  <p className="text-zinc-200 text-sm leading-relaxed">{config.rehab_focus}</p>
+                <div className="bg-amber-900/50 p-4 rounded-xl border border-amber-800 max-h-32 overflow-y-auto custom-scrollbar">
+                  <h3 className="text-emerald-400 text-xs font-bold uppercase mb-1 sticky top-0 bg-amber-900/50">復健重點</h3>
+                  <p className="text-amber-200 text-sm leading-relaxed">{config.rehab_focus}</p>
                 </div>
-                <div className="bg-zinc-900/50 p-4 rounded-xl border border-zinc-800 max-h-32 overflow-y-auto custom-scrollbar">
-                  <h3 className="text-amber-400 text-xs font-bold uppercase mb-1 sticky top-0 bg-zinc-900/50">復健強度</h3>
+                <div className="bg-amber-900/50 p-4 rounded-xl border border-amber-800 max-h-32 overflow-y-auto custom-scrollbar">
+                  <h3 className="text-amber-400 text-xs font-bold uppercase mb-1 sticky top-0 bg-amber-900/50">復健強度</h3>
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-zinc-200 text-sm font-bold">Lvl {config.logic.difficulty_score || 1}</span>
-                    <span className="text-zinc-400 text-[10px]">
+                    <span className="text-amber-200 text-sm font-bold">Lvl {config.logic.difficulty_score || 1}</span>
+                    <span className="text-amber-400 text-[10px]">
                       {config.logic.mode === 'DIFF' ? '平衡誤差' : '目標力道'} {' '}
                       {Math.round((config.logic.target_range?.[0] ?? 0.7) * 100)}% - {Math.round((config.logic.target_range?.[1] ?? 0.8) * 100)}%
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <div className="flex-1 h-2 bg-zinc-800 rounded-full overflow-hidden">
+                    <div className="flex-1 h-2 bg-amber-800 rounded-full overflow-hidden">
                       <div className="h-full bg-amber-500" style={{ width: `${(config.logic.difficulty_score || 1) * 10}%` }} />
                     </div>
                   </div>
-                  <p className="text-zinc-500 text-[10px] mt-1">{config.logic.is_independent ? '雙手獨立訓練' : '雙手協調訓練'}</p>
+                  <p className="text-amber-500 text-[10px] mt-1">{config.logic.is_independent ? '雙手獨立訓練' : '雙手協調訓練'}</p>
                 </div>
-                <div className="bg-zinc-900/50 p-4 rounded-xl border border-zinc-800 max-h-32 overflow-y-auto custom-scrollbar">
-                  <h3 className="text-cyan-400 text-xs font-bold uppercase mb-1 sticky top-0 bg-zinc-900/50">難度建議</h3>
-                  <p className="text-zinc-200 text-sm leading-relaxed">{config.difficulty_suggestion}</p>
+                <div className="bg-amber-900/50 p-4 rounded-xl border border-amber-800 max-h-32 overflow-y-auto custom-scrollbar">
+                  <h3 className="text-cyan-400 text-xs font-bold uppercase mb-1 sticky top-0 bg-amber-900/50">難度建議</h3>
+                  <p className="text-amber-200 text-sm leading-relaxed">{config.difficulty_suggestion}</p>
                 </div>
               </div>
             </>
           ) : (
-            <div className="flex-1 border-2 border-dashed border-zinc-800 rounded-xl flex flex-col items-center justify-center text-zinc-600 space-y-4">
-              <div className="w-20 h-20 bg-zinc-900 rounded-full flex items-center justify-center text-4xl">
+            <div className="flex-1 border-2 border-dashed border-amber-800 rounded-xl flex flex-col items-center justify-center text-amber-600 space-y-4">
+              <div className="w-20 h-20 bg-amber-900 rounded-full flex items-center justify-center text-4xl">
                 🤖
               </div>
               <div className="text-center">
@@ -1106,16 +1375,16 @@ const App: React.FC = () => {
       </div>
       {/* Rehab Log Modal */}
       {showRehabLog && (
-        <div className="fixed inset-0 bg-black/90 backdrop-blur-xl z-[300] flex items-center justify-center p-4 animate-in fade-in duration-300">
-          <div className="w-full max-w-4xl bg-zinc-900 border border-white/10 rounded-[2rem] shadow-2xl flex flex-col max-h-[85vh]">
-            <div className="p-8 border-b border-white/5 flex justify-between items-center bg-zinc-900/50">
+        <div className="fixed inset-0 bg-amber-950/90 backdrop-blur-xl z-[300] flex items-center justify-center p-4 animate-in fade-in duration-300">
+          <div className="w-full max-w-4xl bg-amber-900 border border-white/10 rounded-[2rem] shadow-2xl flex flex-col max-h-[85vh]">
+            <div className="p-8 border-b border-white/5 flex justify-between items-center bg-amber-900/50">
               <div>
                 <h2 className="text-3xl font-black text-white tracking-tight flex items-center gap-3">
                   <ClipboardList className="w-8 h-8 text-cyan-400" />
                   個人康復日誌
                 </h2>
                 <div className="flex items-center gap-2 mt-1">
-                  <p className="text-zinc-500 text-sm uppercase tracking-widest font-bold">Patient Recovery Records</p>
+                  <p className="text-amber-500 text-sm uppercase tracking-widest font-bold">Patient Recovery Records</p>
                   {selectedPatient && (
                     <span className="text-emerald-400 text-xs font-bold px-2 py-0.5 bg-emerald-400/10 border border-emerald-400/20 rounded">
                       正在顯示：{selectedPatient.name}
@@ -1132,13 +1401,13 @@ const App: React.FC = () => {
                 </button>
                 <button
                   onClick={handleClearAllPrescriptions}
-                  className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 border border-zinc-700 rounded-lg text-xs font-bold transition-all"
+                  className="px-4 py-2 bg-amber-800 hover:bg-amber-700 text-amber-400 border border-amber-700 rounded-lg text-xs font-bold transition-all"
                 >
                   🧹 清除處方模板
                 </button>
                 <button
                   onClick={() => setShowRehabLog(false)}
-                  className="w-12 h-12 bg-white/5 hover:bg-white/10 rounded-full flex items-center justify-center text-zinc-400 transition-all"
+                  className="w-12 h-12 bg-white/5 hover:bg-white/10 rounded-full flex items-center justify-center text-amber-400 transition-all"
                 >
                   ✕
                 </button>
@@ -1158,7 +1427,7 @@ const App: React.FC = () => {
 
                 if (filtered.length === 0) {
                   return (
-                    <div className="h-64 flex flex-col items-center justify-center text-zinc-700 bg-black/20 rounded-3xl border-2 border-dashed border-white/5">
+                    <div className="h-64 flex flex-col items-center justify-center text-amber-700 bg-amber-950/20 rounded-3xl border-2 border-dashed border-white/5">
                       <Search className="w-12 h-12 mb-4 opacity-20" />
                       <p className="font-bold">{selectedPatient ? `尚無 ${selectedPatient.name} の康復紀錄` : '尚無康復紀錄'}</p>
                     </div>
@@ -1179,18 +1448,18 @@ const App: React.FC = () => {
                             }
                             setShowRehabLog(false);
                           }}
-                          className="group bg-zinc-950 hover:bg-zinc-800 p-5 rounded-2xl border border-white/5 hover:border-cyan-500/30 transition-all cursor-pointer flex flex-col md:flex-row gap-4 items-start md:items-center justify-between"
+                          className="group bg-amber-950 hover:bg-amber-800 p-5 rounded-2xl border border-white/5 hover:border-cyan-500/30 transition-all cursor-pointer flex flex-col md:flex-row gap-4 items-start md:items-center justify-between"
                         >
                           <div className="flex items-center gap-4">
-                            <div className="w-12 h-12 bg-zinc-900 rounded-xl flex items-center justify-center text-2xl shadow-inner group-hover:bg-cyan-900/20 transition-colors">
-                              <User className="w-6 h-6 text-zinc-600 group-hover:text-cyan-400" />
+                            <div className="w-12 h-12 bg-amber-900 rounded-xl flex items-center justify-center text-2xl shadow-inner group-hover:bg-cyan-900/20 transition-colors">
+                              <User className="w-6 h-6 text-amber-600 group-hover:text-cyan-400" />
                             </div>
                             <div>
                               <div className="flex items-center gap-2">
                                 <span className="text-white font-black text-lg">{rx.patientName || '未命名'}</span>
-                                <span className="bg-zinc-800 text-zinc-500 text-[10px] px-2 py-0.5 rounded-full font-bold">{rx.game_name}</span>
+                                <span className="bg-amber-800 text-amber-500 text-[10px] px-2 py-0.5 rounded-full font-bold">{rx.game_name}</span>
                               </div>
-                              <div className="flex items-center gap-3 text-zinc-500 text-xs mt-1">
+                              <div className="flex items-center gap-3 text-amber-500 text-xs mt-1">
                                 <span className="flex items-center gap-1.5 font-bold"><Calendar className="w-3 h-3" /> {new Date(rx.timestamp).toLocaleDateString()}</span>
                               </div>
                             </div>
@@ -1198,7 +1467,7 @@ const App: React.FC = () => {
 
                           <div className="flex items-center gap-6 w-full md:w-auto">
                             <div className="flex-1 md:flex-none flex flex-col items-end">
-                              <span className="text-zinc-500 text-[10px] font-black uppercase tracking-tighter">達成率</span>
+                              <span className="text-amber-500 text-[10px] font-black uppercase tracking-tighter">達成率</span>
                               <div className="flex items-center gap-1 text-emerald-400">
                                 <span className="text-xl font-black">{rx.best_achievement_rate || 0}%</span>
                                 <Star className="w-4 h-4 fill-current" />
@@ -1206,7 +1475,7 @@ const App: React.FC = () => {
                             </div>
 
                             <div className="flex-1 md:flex-none flex flex-col items-end min-w-[100px]">
-                              <span className="text-zinc-500 text-[10px] font-black uppercase tracking-tighter">代償校驗</span>
+                              <span className="text-amber-500 text-[10px] font-black uppercase tracking-tighter">代償校驗</span>
                               {rx.metrics?.compensationOccurred ? (
                                 <span className="text-rose-400 text-xs font-bold bg-rose-400/10 px-2 py-0.5 rounded-lg border border-rose-400/20">偵測到代償</span>
                               ) : (
@@ -1260,6 +1529,15 @@ const App: React.FC = () => {
           onAccept={handleAcceptSuggestion}
           onClose={() => setAiSuggestion(null)}
         />
+      )}
+
+      {toast && (
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[2000] animate-in slide-in-from-bottom-5 duration-300">
+          <div className={`px-6 py-3 rounded-full shadow-2xl flex items-center gap-2 font-bold text-sm ${toast.type === 'success' ? 'bg-emerald-600 text-white' : 'bg-amber-800 text-amber-300 border border-amber-700'
+            }`}>
+            {toast.message}
+          </div>
+        </div>
       )}
     </div>
   );

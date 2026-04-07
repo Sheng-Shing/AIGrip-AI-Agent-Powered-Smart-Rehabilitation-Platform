@@ -5,9 +5,9 @@ import gsap from 'gsap';
 import { GameConfig, PressureData, GameAction, GameMode, SessionMetrics } from '../types';
 
 interface GameViewProps {
-  config: GameConfig;
-  pressure: PressureData;
-  isActive: boolean;
+  patientName?: string;
+  mvcL?: number;
+  mvcR?: number;
   onSessionEnd: (metrics: SessionMetrics) => void;
 }
 
@@ -42,7 +42,7 @@ const parseColor = (c: string) => {
   return parseInt(hex, 16) || 0xffffff;
 };
 
-const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessionEnd }) => {
+const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, patientName, mvcL = 1.0, mvcR = 1.0, onSessionEnd }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef({ config, pressure, isActive });
   const sessionContainerRef = useRef<PIXI.Container | null>(null);
@@ -77,6 +77,11 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
   const breathingBallRef = useRef<PIXI.Graphics | null>(null);
   const breathingBallOuterRef = useRef<PIXI.Graphics | null>(null);
   const maxPressureRef = useRef<number>(0);
+  const maxPressureLRef = useRef<number>(0); // New: Left Hand Peak
+  const maxPressureRRef = useRef<number>(0); // New: Right Hand Peak
+  const patientLockTextRef = useRef<PIXI.Text | null>(null);
+  const calibrationSamplesRef = useRef<{ t: number, l: number, r: number }[]>([]);
+  const applyThemeCountRef = useRef<number>(0);
 
   // 同步狀態到 Ref 避免 Ticker 閉包問題
   useEffect(() => {
@@ -85,6 +90,7 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
 
   const applyTheme = async (app: PIXI.Application, cfg: GameConfig) => {
     if (!sessionContainerRef.current) return;
+    const currentCount = ++applyThemeCountRef.current;
 
     try {
       // 背景設置
@@ -92,6 +98,8 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
       if (cfg.bg_image_url) {
         try {
           const bgTexture = await PIXI.Assets.load(cfg.bg_image_url);
+          if (currentCount !== applyThemeCountRef.current) return;
+          
           if (!backgroundSpriteRef.current) {
             backgroundSpriteRef.current = new PIXI.Sprite(bgTexture);
             sessionContainerRef.current.addChildAt(backgroundSpriteRef.current, 0);
@@ -134,6 +142,7 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
       rightMaintenanceTimerRef.current = 0;
       hasScoredRef.current = false;
       completedCountsRef.current = 0;
+      calibrationSamplesRef.current = [];
 
       // Initialize or Update Instruction Text
       const min = cfg.logic.target_range?.[0] ?? 0.7;
@@ -189,6 +198,24 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
       compensationWarningRef.current.x = app.screen.width / 2;
       compensationWarningRef.current.y = app.screen.height / 2 + 150;
       compensationWarningRef.current.visible = false;
+      // Visual Locking: Patient Name
+      if (!patientLockTextRef.current) {
+        patientLockTextRef.current = new PIXI.Text({
+          text: patientName ? `[患者: ${patientName}]` : '',
+          style: {
+            fill: 0x888888,
+            fontSize: 16,
+            fontWeight: 'bold',
+            stroke: { color: 0x000000, width: 2 }
+          }
+        });
+        patientLockTextRef.current.anchor.set(1, 1);
+        sessionContainerRef.current.addChild(patientLockTextRef.current);
+      } else {
+        patientLockTextRef.current.text = patientName ? `[患者: ${patientName}]` : '';
+      }
+      patientLockTextRef.current.x = app.screen.width - 20;
+      patientLockTextRef.current.y = app.screen.height - 10;
 
       // Score Text (Left - Green)
       // Score Text (Left)
@@ -226,7 +253,8 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
         leftScoreTextRef.current.x = 40;
         leftScoreTextRef.current.text = `左側達成次數: 0`;
       }
-      leftScoreTextRef.current.visible = isLeftSide;
+      const isCalibration = mode === GameMode.MVC_CALIBRATION;
+      leftScoreTextRef.current.visible = isLeftSide && !isCalibration;
 
       // Score Text (Right)
       if (!rightScoreTextRef.current) {
@@ -247,8 +275,8 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
       }
       rightScoreTextRef.current.x = app.screen.width - 40;
       rightScoreTextRef.current.y = app.screen.height - 40;
-      const isRightSide = (cfg.logic.side === 'right' || cfg.logic.side === 'both');
-      rightScoreTextRef.current.visible = isDual && isRightSide;
+      const isRightSide = (cfg.logic.side === 'right' || cfg.logic.side === 'both' || isSingleContainer); // Added isSingleContainer check here just in case, but usually handled by isDual
+      rightScoreTextRef.current.visible = (isDual || isCalibration) && isRightSide && !isCalibration;
       rightScoreTextRef.current.text = `右側達成次數: ${rightScoreRef.current}`;
 
       // Rhythm Error Text
@@ -321,6 +349,8 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
           try {
             console.log(`Loading image for ${side} target:`, cfg.image_url.substring(0, 50) + "...");
             const texture = await PIXI.Assets.load(cfg.image_url);
+            if (currentCount !== applyThemeCountRef.current) return null;
+            
             const sprite = new PIXI.Sprite(texture);
             sprite.anchor.set(0.5);
             const maxDim = 150;
@@ -342,8 +372,11 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
       };
 
       leftTargetRef.current = await createTarget('left');
-      if (mode === GameMode.DUAL || mode === GameMode.INDEPENDENT) {
+      if (currentCount !== applyThemeCountRef.current) return;
+
+      if (mode === GameMode.DUAL || mode === GameMode.INDEPENDENT || mode === GameMode.MVC_CALIBRATION) {
         rightTargetRef.current = await createTarget('right');
+        if (currentCount !== applyThemeCountRef.current) return;
       }
 
       // Initialize visual feedback elements
@@ -459,8 +492,9 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
     }
   };
 
+  const tickerRef = useRef<(() => void) | null>(null);
+
   useEffect(() => {
-    let tickerCb: () => void;
     let isMounted = true;
 
     const setup = async () => {
@@ -479,7 +513,8 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
         sessionContainerRef.current = sessionContainer;
 
         // Helper functions for ticker logic - defined inside setup to access refs/app
-        const updateTargetAction = (target: PIXI.Container, targetVal: number, cfg: any, app: any) => {
+        const updateTargetAction = (target: PIXI.Container, rawVal: number, cfg: any, app: any) => {
+          const targetVal = Math.max(0, Math.min(1, rawVal));
           if (cfg.logic.mode === GameMode.DIFF) {
             // DIFF mode mapping: rotation綁定(right-left) 讓右邊出力時向右(順時針)傾斜
             const diffActual = (stateRef.current.pressure.right - stateRef.current.pressure.left);
@@ -551,9 +586,16 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
           gsap.to(txt, { y: txt.y - 100, alpha: 0, duration: 1, onComplete: () => txt.destroy() });
         };
 
-        tickerCb = () => {
+        const tickerCb = () => {
           const { config: cfg, pressure: prs, isActive: active } = stateRef.current;
           if (!sessionContainerRef.current || !app) return;
+
+          // Normalize pressure for training modes (use raw for calibration)
+          const isCalibration = cfg.logic.mode === GameMode.MVC_CALIBRATION;
+          const normalizedPrs = isCalibration ? prs : {
+            left: prs.left / (mvcL || 1.0),
+            right: prs.right / (mvcR || 1.0)
+          };
 
           if (!active) {
             // Reset visibility and reset UI when not active
@@ -567,7 +609,8 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
                 const isRightSide = (cfg.logic.side === 'right' || isSingleContainer);
                 const isLeftSide = (cfg.logic.side === 'left' || cfg.logic.side === 'both' || isSingleContainer);
 
-                const visible = (i === 0 && isLeftSide) || (i === 1 && isRightSide && (mode === GameMode.DUAL || mode === GameMode.INDEPENDENT));
+                const isDualDisplay = (mode === GameMode.DUAL || mode === GameMode.INDEPENDENT || mode === GameMode.MVC_CALIBRATION);
+                const visible = (i === 0 && isLeftSide) || (i === 1 && isRightSide && isDualDisplay);
 
                 ref.current.alpha = 0.5;
                 ref.current.rotation = 0;
@@ -591,6 +634,7 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
 
           const mode = cfg.logic.mode || (cfg.logic.is_independent ? GameMode.INDEPENDENT : GameMode.DUAL);
           const minEngagement = cfg.logic.min_engagement ?? 0.05;
+          const minForce = cfg.logic.min_force ?? minEngagement;
           const [min, max] = cfg.logic.target_range ?? [0.7, 0.8];
           const requiredHoldTime = (cfg.logic.hold_time ?? 1.0) * 1000;
 
@@ -605,6 +649,10 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
           // --- Session Analytics & Timer ---
           const totalDuration = cfg.logic.total_duration || 60;
           const elapsedSec = (performance.now() - sessionStartTimeRef.current) / 1000;
+          
+          if (cfg.logic.mode === GameMode.MVC_CALIBRATION) {
+            calibrationSamplesRef.current.push({ t: elapsedSec, l: prs.left, r: prs.right });
+          }
           const remainingSec = Math.max(0, totalDuration - elapsedSec);
 
           if (progressBarRef.current && timerTextRef.current) {
@@ -631,12 +679,50 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
           if (remainingSec <= 0 && !sessionEndedRef.current) {
             // Session Ended
             sessionEndedRef.current = true;
+
+            let finalL = maxPressureLRef.current;
+            let finalR = maxPressureRRef.current;
+
+            if (cfg.logic.mode === GameMode.MVC_CALIBRATION) {
+              const samples = calibrationSamplesRef.current;
+              // Filter 4s to 8s
+              const filtered = samples.filter(s => s.t >= 4 && s.t <= 8);
+
+              const getStableAvg = (hand: 'l' | 'r') => {
+                if (filtered.length < 10) return 0;
+                let bestAvg = 0;
+                let minVar = Infinity;
+
+                // Sliding window 3s
+                // Start time s can be from 4.0 to 5.0
+                for (let s = 4.0; s <= 5.0; s += 0.1) {
+                  const window = filtered.filter(samp => samp.t >= s && samp.t <= s + 3);
+                  if (window.length < 5) continue;
+
+                  const values = window.map(samp => samp[hand]);
+                  const avg = values.reduce((a, b) => a + b, 0) / values.length;
+                  const variance = values.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / values.length;
+
+                  if (variance < minVar) {
+                    minVar = variance;
+                    bestAvg = avg;
+                  }
+                }
+                return bestAvg;
+              };
+
+              finalL = Math.min(1.0, getStableAvg('l'));
+              finalR = Math.min(1.0, getStableAvg('r'));
+            }
+
             onSessionEnd({
               effectiveSeconds: totalEffectiveMSRef.current / 1000,
               totalSeconds: totalDuration,
               avgPressureL: totalPressureLRef.current / Math.max(1, totalSamplesRef.current),
               avgPressureR: totalPressureRRef.current / Math.max(1, totalSamplesRef.current),
               maxPressure: maxPressureRef.current,
+              maxPressureL: finalL,
+              maxPressureR: finalR,
               compensationOccurred: compensationCountRef.current > (totalSamplesRef.current * 0.05)
             });
             return;
@@ -644,9 +730,9 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
 
           // Track Max Pressure
           const currentMax = Math.max(prs.left, prs.right);
-          if (currentMax > maxPressureRef.current) {
-            maxPressureRef.current = currentMax;
-          }
+          if (currentMax > maxPressureRef.current) maxPressureRef.current = Math.min(1.0, currentMax);
+          if (prs.left > maxPressureLRef.current) maxPressureLRef.current = Math.min(1.0, prs.left);
+          if (prs.right > maxPressureRRef.current) maxPressureRRef.current = Math.min(1.0, prs.right);
 
           // MODE LOGIC START
           switch (mode) {
@@ -684,8 +770,8 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
                 target.y = app.screen.height / 2;
 
                 if (isThisSide && !hasScoredRef.current) {
-                  const val = i === 0 ? prs.left : prs.right;
-                  const oppositeVal = i === 0 ? prs.right : prs.left;
+                  const val = i === 0 ? normalizedPrs.left : normalizedPrs.right;
+                  const oppositeVal = i === 0 ? normalizedPrs.right : normalizedPrs.left;
 
                   if (rhythmTargetMarkerRef.current) {
                     const themeColor = parseColor(cfg.theme.color);
@@ -696,8 +782,9 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
 
                   updateTargetAction(target, Math.max(0, Math.min(1, val)), cfg, app);
 
-                  const success = val >= min && val <= max && oppositeVal < minEngagement;
-                  const compensation = val >= min && val <= max && oppositeVal >= minEngagement;
+                  const rawOpposite = i === 0 ? prs.right : prs.left;
+                  const success = val >= min && val <= max && rawOpposite < minEngagement;
+                  const compensation = val >= min && val <= max && rawOpposite >= minEngagement;
 
                   if (compensation && rhythmErrorTextRef.current) {
                     rhythmErrorTextRef.current.visible = true;
@@ -727,7 +814,7 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
                   }
                 } else if (isThisSide && hasScoredRef.current) {
                   // Already scored but still showing dimmed
-                  const val = i === 0 ? prs.left : prs.right;
+                  const val = i === 0 ? normalizedPrs.left : normalizedPrs.right;
                   updateTargetAction(target, Math.max(0, Math.min(1, val)), cfg, app);
                 }
               });
@@ -743,11 +830,11 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
                 target.x = app.screen.width / 2;
                 target.y = app.screen.height / 2;
 
-                const val = mode === GameMode.SUM ? (prs.left + prs.right) : (prs.left + prs.right) / 2;
+                const val = mode === GameMode.SUM ? (normalizedPrs.left + normalizedPrs.right) : (normalizedPrs.left + normalizedPrs.right) / 2;
                 updateTargetAction(target, Math.max(0, Math.min(1, val)), cfg, app);
 
-                const success = val >= min && val <= max && prs.left > minEngagement && prs.right > minEngagement;
-                const compensation = val >= min && val <= max && (prs.left <= minEngagement || prs.right <= minEngagement);
+                const success = val >= min && val <= max && normalizedPrs.left > minEngagement && normalizedPrs.right > minEngagement;
+                const compensation = val >= min && val <= max && (normalizedPrs.left <= minEngagement || normalizedPrs.right <= minEngagement);
 
                 if (compensation && compensationWarningRef.current) compensationWarningRef.current.visible = true;
 
@@ -778,14 +865,18 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
 
                 target.x = app.screen.width / 2;
                 target.y = app.screen.height / 2;
-                const diffVal = Math.abs(prs.left - prs.right);
+                const diffVal = Math.abs(normalizedPrs.left - normalizedPrs.right);
                 updateTargetAction(target, diffVal, cfg, app);
 
-                const success = diffVal >= min && diffVal <= max && prs.left > minEngagement && prs.right > minEngagement;
-                const balanceIssue = (diffVal > max) && prs.left > minEngagement && prs.right > minEngagement;
+                const success = diffVal >= min && diffVal <= max && normalizedPrs.left >= minForce && normalizedPrs.right >= minForce;
+                const balanceIssue = (diffVal > max) && normalizedPrs.left >= minForce && normalizedPrs.right >= minForce;
+                const lowForceIssue = normalizedPrs.left < minForce || normalizedPrs.right < minForce;
 
                 if (balanceIssue && diffWarningTextRef.current) {
-                  diffWarningTextRef.current.text = prs.left > prs.right ? '左手太用力了！' : '右手太用力了！';
+                  diffWarningTextRef.current.text = normalizedPrs.left > normalizedPrs.right ? '左手太用力了！' : '右手太用力了！';
+                  diffWarningTextRef.current.visible = true;
+                } else if (lowForceIssue && diffWarningTextRef.current && (prs.left > minEngagement || prs.right > minEngagement)) {
+                  diffWarningTextRef.current.text = '請雙手同步加壓至目標力道';
                   diffWarningTextRef.current.visible = true;
                 }
 
@@ -801,7 +892,60 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
                   }
                 } else {
                   maintenanceTimerRef.current = 0;
-                  resetTargetTint(target, balanceIssue);
+                  resetTargetTint(target, balanceIssue || lowForceIssue);
+                }
+
+                if (instructionTextRef.current && cfg.logic.min_force) {
+                    const mf = Math.round(cfg.logic.min_force * 100);
+                    const currentText = instructionTextRef.current.text;
+                    if (!currentText.includes('最小門檻')) {
+                        instructionTextRef.current.text += `\n(啟動平衡最小門檻: ${mf}%)`;
+                    }
+                }
+              }
+              break;
+            }
+
+            case GameMode.MVC_CALIBRATION: {
+              const leftTarget = leftTargetRef.current;
+              const rightTarget = rightTargetRef.current;
+
+              if (leftTarget && rightTarget) {
+                leftTarget.visible = true;
+                rightTarget.visible = true;
+
+                // Position side-by-side for simultaneous view
+                leftTarget.x = app.screen.width * 0.35;
+                leftTarget.y = app.screen.height / 2;
+                rightTarget.x = app.screen.width * 0.65;
+                rightTarget.y = app.screen.height / 2;
+
+                updateTargetAction(leftTarget, prs.left, cfg, app);
+                updateTargetAction(rightTarget, prs.right, cfg, app);
+
+                const avgSqueeze = (prs.left + prs.right) / 2;
+
+                // In Calibration, effective time is just anytime they are squeezing
+                if (avgSqueeze > minEngagement) {
+                  totalEffectiveMSRef.current += app.ticker.deltaMS;
+                  (leftTarget as any).tint = 0xFFD700;
+                  (rightTarget as any).tint = 0xFFD700;
+                } else {
+                  (leftTarget as any).tint = 0xFFFFFF;
+                  (rightTarget as any).tint = 0xFFFFFF;
+                }
+
+                if (instructionTextRef.current) {
+                  const progSec = elapsedSec.toFixed(1);
+                  const pL = Math.round(maxPressureLRef.current * 100);
+                  const pR = Math.round(maxPressureRRef.current * 100);
+                  
+                  let subPrompt = "預備中...";
+                  if (elapsedSec < 4) subPrompt = "準備/開始加壓...";
+                  else if (elapsedSec <= 8) subPrompt = "【核心穩定持壓中】請保持！";
+                  else subPrompt = "即將結束，請穩定握緊...";
+
+                  instructionTextRef.current.text = `今日力道基準校準中：${subPrompt}\n進度：${progSec}s / 10.0s\n(當前峰值 - 左: ${pL}% / 右: ${pR}%)`;
                 }
               }
               break;
@@ -811,7 +955,7 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
               const ball = breathingBallRef.current;
               const outer = breathingBallOuterRef.current;
               if (ball && outer) {
-                const val = (prs.left + prs.right) / 2;
+                const val = (normalizedPrs.left + normalizedPrs.right) / 2;
                 const targetVal = 0.3;
                 const tolerance = 0.05; // ±5%
 
@@ -825,7 +969,11 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
                 const breathScale = 1.0 + Math.sin(time * 2) * 0.05;
                 outer.scale.set(breathScale);
 
-                const success = val >= (targetVal - tolerance) && val <= (targetVal + tolerance);
+                const valL = normalizedPrs.left;
+                const valR = normalizedPrs.right;
+                const successL = valL >= (targetVal - tolerance) && valL <= (targetVal + tolerance);
+                const successR = valR >= (targetVal - tolerance) && valR <= (targetVal + tolerance);
+                const success = successL && successR;
 
                 if (success) {
                   maintenanceTimerRef.current += app.ticker.deltaMS;
@@ -839,16 +987,21 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
                   (ball as any).tint = 0x22d3ee; // Cyan
                   (outer as any).tint = 0x22d3ee;
 
-                  if (val > (targetVal + tolerance)) {
-                    if (diffWarningTextRef.current) {
-                      diffWarningTextRef.current.text = '放鬆一點...';
-                      diffWarningTextRef.current.visible = true;
-                    }
-                  } else if (val < (targetVal - tolerance) && val > minEngagement) {
-                    if (diffWarningTextRef.current) {
-                      diffWarningTextRef.current.text = '再多出一點力...';
-                      diffWarningTextRef.current.visible = true;
-                    }
+                  const feedback: string[] = [];
+                  const getHint = (v: number, raw: number, side: string) => {
+                    if (v > (targetVal + tolerance)) return `${side}放鬆一點`;
+                    if (v < (targetVal - tolerance) && raw > minEngagement) return `${side}用力一點`;
+                    return null;
+                  };
+
+                  const hintL = getHint(valL, prs.left, "左手");
+                  const hintR = getHint(valR, prs.right, "右手");
+                  if (hintL) feedback.push(hintL);
+                  if (hintR) feedback.push(hintR);
+
+                  if (feedback.length > 0 && diffWarningTextRef.current) {
+                    diffWarningTextRef.current.text = feedback.join('、') + '...';
+                    diffWarningTextRef.current.visible = true;
                   }
                 }
 
@@ -872,17 +1025,15 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
 
                 target.x = i === 0 ? app.screen.width * 0.25 : app.screen.width * 0.75;
                 target.y = app.screen.height / 2;
-                const val = i === 0 ? prs.left : prs.right;
-                updateTargetAction(target, Math.max(0, Math.min(1, val)), cfg, app);
+                const val = i === 0 ? normalizedPrs.left : normalizedPrs.right;
+                updateTargetAction(target, val, cfg, app);
 
                 const success = val >= min && val <= max;
                 if (success) {
                   const timer = i === 0 ? leftMaintenanceTimerRef : rightMaintenanceTimerRef;
                   timer.current += app.ticker.deltaMS;
                   // In DUAL mode, any hand in range contributes to "effective time"
-                  // But we should only add once per frame. Use a flag if needed or just sum.
-                  // For simplicity, if either (or both) succeeds, we add once.
-                  if (i === 0 || (i === 1 && !(prs.left >= min && prs.left <= max))) {
+                  if (i === 0 || (i === 1 && !(normalizedPrs.left >= min && normalizedPrs.left <= max))) {
                     totalEffectiveMSRef.current += app.ticker.deltaMS;
                   }
 
@@ -909,9 +1060,12 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
           }
         };
 
-        app.ticker.add(tickerCb);
-        if (stateRef.current.config) {
-          applyTheme(app, stateRef.current.config);
+        if (isMounted) {
+          app.ticker.add(tickerCb);
+          tickerRef.current = tickerCb;
+          if (stateRef.current.config) {
+            applyTheme(app, stateRef.current.config);
+          }
         }
       } catch (err) {
         console.error("Pixi Setup Error:", err);
@@ -925,7 +1079,10 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
       const g = globalThis as any;
       const app = g[PIXI_GLOBAL_KEY] as PIXI.Application;
       if (app) {
-        if (tickerCb) app.ticker.remove(tickerCb);
+        if (tickerRef.current) {
+          app.ticker.remove(tickerRef.current);
+          tickerRef.current = null;
+        }
         if (sessionContainerRef.current) {
           app.stage.removeChild(sessionContainerRef.current);
           sessionContainerRef.current.destroy({ children: true });
@@ -966,12 +1123,14 @@ const GameView: React.FC<GameViewProps> = ({ config, pressure, isActive, onSessi
       totalSamplesRef.current = 0;
       compensationCountRef.current = 0;
       maxPressureRef.current = 0;
+      maxPressureLRef.current = 0;
+      maxPressureRRef.current = 0;
     }
   }, [isActive]);
 
   return (
-    <div ref={containerRef} className="w-full h-full rounded-xl overflow-hidden bg-black flex items-center justify-center">
-      <div className="text-zinc-800 animate-pulse">
+    <div ref={containerRef} className="w-full h-full rounded-xl overflow-hidden bg-amber-950 flex items-center justify-center">
+      <div className="text-amber-800 animate-pulse">
         {isActive ? '運作中...' : '渲染引擎就緒'}
       </div>
     </div>

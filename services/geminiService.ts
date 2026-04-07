@@ -14,6 +14,7 @@ const SYSTEM_INSTRUCTION = `你是一位資深的物理治療師與「度假感�
    - 應用：神經反應、抑制聯帶運動（如：打地鼠、接住落下的水果）。
 3. **DIFF (平衡大師)**: 
    - 核心：計算左右壓力差 Math.abs(left - right)。動作必用 ROTATE。
+   - **進階參數**：可設定 \`min_force\` 要求雙手皆須超過此門檻（例如 0.15）才開始計算平衡，避免作弊。
    - 應用：糾正力道不均、雙側協調（如：衝浪板平衡、天平秤重）。
 4. **AVERAGE (導航者)**: 
    - 核心：雙手平均壓力 (left + right) / 2。動作必用 MOVE_Y。
@@ -117,7 +118,7 @@ const responseSchema = {
       properties: {
         mode: {
           type: Type.STRING,
-          enum: ["DUAL", "AVERAGE", "DIFF", "SUM", "INDEPENDENT"],
+          enum: ["DUAL", "AVERAGE", "DIFF", "SUM", "INDEPENDENT", "MVC_CALIBRATION"],
           description: "核心運算邏輯模式"
         },
         side: {
@@ -155,6 +156,14 @@ const responseSchema = {
           type: Type.NUMBER,
           description: "本次度假任務總計時間（秒），建議範圍 60-180"
         },
+        is_calibration: { 
+          type: Type.BOOLEAN, 
+          description: "是否為基準校準任務" 
+        },
+        min_force: {
+          type: Type.NUMBER,
+          description: "最小力道要求門檻 (0.0~1.0)，平衡或雙側模式下雙手皆須超過此值才計分"
+        }
       },
       required: ["mode", "side", "target_range", "hold_time", "min_engagement", "action", "is_independent", "difficulty_score", "total_duration"],
     },
